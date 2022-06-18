@@ -13,6 +13,7 @@ const session = require('express-session');
 const passport = require('passport');
 const passportLocalMongoose = require("passport-local-mongoose");
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const FacebookStrategy = require('passport-facebook').Strategy;
 const findOrCreate = require("mongoose-findorcreate");
 
 //Encryption Techniques : 
@@ -34,6 +35,7 @@ const findOrCreate = require("mongoose-findorcreate");
 app.set("view engine", "ejs");
 app.use(express.static("public"));
 
+
 app.use(bodyParser.urlencoded({ extended: true }));
 
 //For Cookies : 
@@ -42,17 +44,19 @@ app.use(session({
   resave: false,
   saveUninitialized: false
 }));
+app.use(require('flash')());
 
 app.use(passport.initialize());
 app.use(passport.session());
 
 
-mongoose.connect("mongodb://localhost:27017/userDB");
+mongoose.connect(process.env.MONGO_URL);
 const userSchema = new mongoose.Schema({
   email: String,
   password: String,
   googleId: String,
-  secret :String
+  facebookId: String,
+  secret: String
 });
 
 userSchema.plugin(passportLocalMongoose);
@@ -67,34 +71,45 @@ const User = new mongoose.model("User", userSchema);
 
 passport.use(User.createStrategy());
 
-passport.serializeUser(function(user, done) {
+passport.serializeUser(function (user, done) {
   done(null, user.id);
 });
 
-passport.deserializeUser(function(id, done) {
-  User.findById(id, function(err, user) {
+passport.deserializeUser(function (id, done) {
+  User.findById(id, function (err, user) {
     done(err, user);
   });
 });
- 
+
 
 passport.use(new GoogleStrategy({
   clientID: process.env.CLIENT_ID,
   clientSecret: process.env.CLIENT_SECRET,
-  callbackURL: "http://localhost:3000/auth/google/secrets",
+  callbackURL: "https://safe-castle-37790.herokuapp.com/auth/google/secrets",
   userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo"
 },
+  function (accessToken, refreshToken, profile, cb) {
+
+
+    User.findOrCreate({ googleId: profile.id }, function (err, user) {
+      return cb(err, user);
+    });
+  }
+));
+
+
+passport.use(new FacebookStrategy({
+  clientID: process.env.FB_CLIENT_ID,
+  clientSecret: process.env.FB_CLIENT_SECRET,
+  callbackURL: "https://safe-castle-37790.herokuapp.com/auth/facebook/secrets",
+  profileFields: ['id', 'displayName', 'name', 'gender', 'email']
+},
 function(accessToken, refreshToken, profile, cb) {
-
-
-  User.findOrCreate({ googleId: profile.id }, function (err, user) {
+  User.findOrCreate({ facebookId: profile.id }, function (err, user) {
     return cb(err, user);
   });
 }
 ));
-
-
-
 //Home Route : 
 app.route("/")
   .get((req, res) => {
@@ -149,13 +164,8 @@ app.route("/register")
 //Secrets Route : 
 app.route("/secrets")
   .get((req, res) => {
-    // if (req.isAuthenticated()) {
-    //   res.render("secrets");
-    // } else {
-    //   res.redirect("/login");
-    // }
-
-    User.find({ "secret": { $ne: null } }, (err,foundUsers) => {
+    if (req.isAuthenticated()) {
+          User.find({ "secret": { $ne: null } }, (err, foundUsers) => {
       if (err) {
         console.log(err);
       }
@@ -165,14 +175,22 @@ app.route("/secrets")
         }
       }
     });
+    } else {
+      res.redirect("/login");
+    }
+
+
   });
 
 
-//Login Route :  
+//Logout Route :  
 
-app.get("/logout", function(req, res){
-  req.logout();
-  res.redirect("/");
+app.get('/logout', function(req, res){
+  req.logout((err) => {
+    if(err)
+    console.log(err);
+  });
+  res.redirect('/');
 });
 
 
@@ -184,17 +202,28 @@ app.get("/auth/google",
 
 app.get("/auth/google/secrets",
   passport.authenticate('google', { failureRedirect: "/login" }),
-  function(req, res) {
-    // Successful authentication, redirect to secrets.
+  function (req, res) {
     res.redirect("/secrets");
   });
 
+  app.get('/auth/facebook',
+  passport.authenticate('facebook'));
 
+app.get('/auth/facebook/secrets',
+  passport.authenticate('facebook', { failureRedirect: '/login' }),
+  function(req, res) {
+    // Successful authentication, redirect home.
+    res.redirect('/secrets');
+  });
+
+
+
+//Submit Routes : 
 app.route("/submit")
   .get((req, res) => {
     if (req.isAuthenticated()) {
       res.render("submit");
-      
+
     }
     else {
       res.redirect("/login");
@@ -203,24 +232,28 @@ app.route("/submit")
 
   .post((req, res) => {
     const submittedSecret = req.body.secret;
-    console.log(req.user._id);
+   
 
     User.findById(req.user._id, (err, foundUser) => {
       if (err) {
         console.log(err);
       }
-      
-        if (foundUser) {
-          foundUser.secret = submittedSecret;
-          foundUser.save(() => {
-            res.redirect("/secrets");
-          })
-        }
-      
+
+      if (foundUser) {
+        foundUser.secret = submittedSecret;
+        foundUser.save(() => {
+          res.redirect("/secrets");
+        })
+      }
+
     })
-  })
+  });
 
 
-app.listen(3000, () => {
-  console.log("Running on port 3000");
-})
+  app.get('/privacy-policy', function(req, res){
+    res.render('privacy-policy');
+  });
+
+  app.listen(process.env.PORT || 3000, function() {
+    console.log("Server started on port 3000");
+  });
